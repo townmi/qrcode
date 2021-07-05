@@ -2989,7 +2989,7 @@ func (v qrCodeVersion) quietZoneSize() int {
 
 // getQRCodeVersion returns the QR code version by version number and recovery level.
 // Returns nil if the requested combination is not defined.
-func getQRCodeVerison(level RecoveryLevel, version int) *qrCodeVersion {
+func getQRCodeVersion(level RecoveryLevel, version int) *qrCodeVersion {
 	for _, v := range versions {
 		if v.level == level && v.version == version {
 			return &v

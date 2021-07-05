@@ -3,14 +3,16 @@ package qrcode
 import (
 	"bytes"
 	"errors"
-	bitset "github.com/townmi/qrcode/bitset"
 	"image"
 	"image/color"
 	"image/png"
 	"log"
-	"qrcode/reedsolomon"
+
+	bitset "github.com/townmi/qrcode/bitset"
+	reedsolomon "github.com/townmi/qrcode/reedsolomon"
 )
 
+// Encode a QR Code and return a raw PNG image
 func Encode(content string, level RecoveryLevel, size int) ([]byte, error) {
 	var q *QRCode
 
@@ -38,7 +40,7 @@ type QRCode struct {
 	DisableBorder bool
 
 	encoder *dataEncoder
-	version *qrCodeVersion
+	version qrCodeVersion
 
 	data   *bitset.Bitset
 	symbol *symbol
@@ -60,6 +62,7 @@ func New(content string, level RecoveryLevel) (*QRCode, error) {
 		if err != nil {
 			continue
 		}
+
 		chosenVersion = chooseQRCodeVersion(level, encoder, encoded.Len())
 
 		if chosenVersion != nil {
@@ -84,10 +87,17 @@ func New(content string, level RecoveryLevel) (*QRCode, error) {
 
 		encoder: encoder,
 		data:    encoded,
-		version: chosenVersion,
+		version: *chosenVersion,
 	}
 
 	return q, nil
+}
+
+// Bitmap returns the QR Code as a 2D array of 1-bit pixels.
+func (q *QRCode) Bitmap() [][]bool {
+	// Build QR code
+	q.encode()
+	return q.symbol.bitmap()
 }
 
 func (q *QRCode) encode() {
@@ -105,7 +115,7 @@ func (q *QRCode) encode() {
 		var s *symbol
 		var err error
 
-		s, err = buildRegularSymbol(*q.version, mask, encoded, !q.DisableBorder)
+		s, err = buildRegularSymbol(q.version, mask, encoded, !q.DisableBorder)
 
 		if err != nil {
 			log.Panic(err.Error())
@@ -118,6 +128,7 @@ func (q *QRCode) encode() {
 
 		p := s.penaltyScore()
 
+		//log.Printf("mask=%d p=%3d p1=%3d p2=%3d p3=%3d p4=%d\n", mask, p, s.penalty1(), s.penalty2(), s.penalty3(), s.penalty4())
 		if q.symbol == nil || p < penalty {
 			q.symbol = s
 			q.mask = mask
@@ -126,46 +137,45 @@ func (q *QRCode) encode() {
 	}
 }
 
-func (q *QRCode) Bitmap() [][]bool {
-	// Build QR code
-	q.encode()
-	return q.symbol.bitmap()
-}
-
 func (q *QRCode) Image(size int) image.Image {
-	// Build QR code
+	// Build QR code.
 	q.encode()
 
+	// Minimum pixels (both width and height) required.
 	realSize := q.symbol.size
 
-	// Variable size support
+	// Variable size support.
 	if size < 0 {
 		size = size * -1 * realSize
 	}
 
+	// Actual pixels available to draw the symbol. Automatically increase the
+	// image size if it's not large enough.
 	if size < realSize {
 		size = realSize
 	}
 
-	// Output image
+	// Output image.
 	rect := image.Rectangle{Min: image.Point{}, Max: image.Point{X: size, Y: size}}
+	// rect := image.Rectangle{Min: image.Point{0, 0}, Max: image.Point{size, size}}
 
+	// Saves a few bytes to have them in this order
 	p := color.Palette([]color.Color{q.BackgroundColor, q.ForegroundColor})
 	img := image.NewPaletted(rect, p)
 	fgClr := uint8(img.Palette.Index(q.ForegroundColor))
 
-	// QR code bitmap
+	// QR code bitmap.
 	bitmap := q.symbol.bitmap()
 
-	// Map
+	// Map each image pixel to the nearest QR code module.
 	modulesPerPixel := float64(realSize) / float64(size)
-
 	for y := 0; y < size; y++ {
 		y2 := int(float64(y) * modulesPerPixel)
 		for x := 0; x < size; x++ {
 			x2 := int(float64(x) * modulesPerPixel)
 
 			v := bitmap[y2][x2]
+
 			if v {
 				pos := img.PixOffset(x, y)
 				img.Pix[pos] = fgClr
@@ -220,37 +230,44 @@ func (q *QRCode) encodeBlocks() *bitset.Bitset {
 		}
 	}
 
-	// interleave the blocks
+	// Interleave the blocks.
+
 	result := bitset.New()
 
-	// combine data blocks
+	// Combine data blocks.
 	working := true
 	for i := 0; working; i += 8 {
 		working = false
+
 		for j, b := range block {
 			if i >= block[j].ecStartOffset {
 				continue
 			}
+
 			result.Append(b.data.Substr(i, i+8))
+
 			working = true
 		}
 	}
 
-	// combine error correction blocks.
+	// Combine error correction blocks.
 	working = true
 	for i := 0; working; i += 8 {
 		working = false
+
 		for j, b := range block {
 			offset := i + block[j].ecStartOffset
 			if offset >= block[j].data.Len() {
 				continue
 			}
+
 			result.Append(b.data.Substr(offset, offset+8))
+
 			working = true
 		}
 	}
 
-	// Append remainder bits
+	// Append remainder bits.
 	result.AppendNumBools(q.version.numRemainderBits, false)
 
 	return result
@@ -265,28 +282,30 @@ func max(a int, b int) int {
 
 func (q *QRCode) addPadding() {
 	numDataBits := q.version.numDataBits()
+
 	if q.data.Len() == numDataBits {
 		return
 	}
 
-	// Pad to then nearest codeword boundary
+	// Pad to the nearest codeword boundary.
 	q.data.AppendNumBools(q.version.numBitsToPadToCodeword(q.data.Len()), false)
 
-	// Pad codewords 0b11101100 and 0b00010001
+	// Pad codewords 0b11101100 and 0b00010001.
 	padding := [2]*bitset.Bitset{
 		bitset.New(true, true, true, false, true, true, false, false),
 		bitset.New(false, false, false, true, false, false, false, true),
 	}
 
-	// Insert  pad codewords alternatrly.
+	// Insert pad codewords alternately.
 	i := 0
 	for numDataBits-q.data.Len() >= 8 {
 		q.data.Append(padding[i])
-		i = 1 - i // Alternate between 0 and 1
+
+		i = 1 - i // Alternate between 0 and 1.
 	}
 
 	if q.data.Len() != numDataBits {
-		log.Panicf("bug: got len %d, expected %d", q.data.Len(), numDataBits)
+		log.Panicf("BUG: got len %d, expected %d", q.data.Len(), numDataBits)
 	}
 }
 
@@ -296,7 +315,7 @@ func (q *QRCode) ToString(inverseColor bool) string {
 	for y := range bits {
 		for x := range bits[y] {
 			if bits[y][x] != inverseColor {
-				buf.WriteString(" ")
+				buf.WriteString("  ")
 			} else {
 				buf.WriteString("██")
 			}
@@ -328,7 +347,6 @@ func (q *QRCode) ToSmallString(inverseColor bool) string {
 		}
 		buf.WriteString("\n")
 	}
-
 	// special treatment for the last row if odd
 	if len(bits)%2 == 1 {
 		y := len(bits) - 1
@@ -341,6 +359,5 @@ func (q *QRCode) ToSmallString(inverseColor bool) string {
 		}
 		buf.WriteString("\n")
 	}
-
 	return buf.String()
 }

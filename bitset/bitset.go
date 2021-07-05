@@ -93,7 +93,7 @@ func (b *Bitset) AppendByte(value byte, numBits int) {
 	}
 }
 
-// AppendUnit32 appends the numBits least significant bits form value.
+// AppendUint32 appends the numBits least significant bits form value.
 func (b *Bitset) AppendUint32(value uint32, numBits int) {
 	b.ensureCapacity(numBits)
 
